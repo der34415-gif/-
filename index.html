@@ -1,118 +1,97 @@
 
-const FOLDER_NAME = "صور الواجبات";
-const SHEET_NAME = "سجل تسليم الواجبات";
+const CONFIG = {
+  SPREADSHEET_NAME: 'سجل تسليم الواجبات',
+  DRIVE_FOLDER_NAME: 'صور واجبات الطلاب'
+};
 
 function setup() {
   const props = PropertiesService.getScriptProperties();
 
-  // لا تنشئ مجلدًا وجدولًا جديدين إذا سبق إعداد المشروع.
-  if (props.getProperty("FOLDER_ID") &&
-      props.getProperty("SHEET_ID")) {
-    return "تم إعداد المشروع مسبقًا.";
-  }
+  const ss = SpreadsheetApp.create(CONFIG.SPREADSHEET_NAME);
+  const folder = DriveApp.createFolder(CONFIG.DRIVE_FOLDER_NAME);
 
-  const folder = DriveApp.createFolder(FOLDER_NAME);
-  const spreadsheet = SpreadsheetApp.create(SHEET_NAME);
-  const sheet = spreadsheet.getActiveSheet();
+  props.setProperty('SPREADSHEET_ID', ss.getId());
+  props.setProperty('FOLDER_ID', folder.getId());
 
-  sheet.setName("التسليمات");
+  const sheet = ss.getSheets()[0];
+  sheet.setName('التسليمات');
   sheet.appendRow([
-    "تاريخ التسليم",
-    "اسم الطالب",
-    "الصف",
-    "الشعبة",
-    "عنوان الواجب",
-    "رابط الصورة"
+    'تاريخ الإرسال',
+    'اسم الطالب',
+    'الصف',
+    'الشعبة',
+    'عنوان الواجب',
+    'رابط الصورة',
+    'اسم الملف'
   ]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, 7).setFontWeight('bold');
 
-  props.setProperties({
-    FOLDER_ID: folder.getId(),
-    SHEET_ID: spreadsheet.getId()
-  });
-
-  return "تم إنشاء مجلد الصور وسجل التسليمات.";
+  Logger.log('رابط سجل الواجبات: ' + ss.getUrl());
+  Logger.log('رابط مجلد الصور: ' + folder.getUrl());
 }
 
 function doPost(e) {
   try {
-    const data = JSON.parse(e.postData.contents);
+    const d = JSON.parse(e.postData.contents || '{}');
+
+    const name = String(d.studentName || '').trim();
+    const grade = String(d.grade || '').trim();
+    const section = String(d.section || '').trim();
+    const title = String(d.homeworkTitle || '').trim();
+    const mime = String(d.mimeType || '');
+    const base64 = String(d.imageBase64 || '');
+    const filename = String(d.fileName || 'homework.jpg')
+      .replace(/[\\/:*?"<>|]/g, '_');
+
+    if (!name || !grade || !section || !base64) {
+      throw new Error('بيانات ناقصة');
+    }
+
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) {
+      throw new Error('نوع الصورة غير مدعوم');
+    }
+
+    if (base64.length > 12 * 1024 * 1024) {
+      throw new Error('الصورة كبيرة جدًا');
+    }
+
     const props = PropertiesService.getScriptProperties();
-
-    const folderId = props.getProperty("FOLDER_ID");
-    const sheetId = props.getProperty("SHEET_ID");
-
-    if (!folderId || !sheetId) {
-      throw new Error("يجب تشغيل setup أولًا.");
-    }
-
-    if (!data.studentName || !data.grade ||
-        !data.section || !data.imageBase64) {
-      throw new Error("بيانات الطالب أو صورة الواجب ناقصة.");
-    }
-
-    const allowedTypes = [
-      "image/jpeg",
-      "image/png",
-      "image/webp"
-    ];
-
-    if (!allowedTypes.includes(data.mimeType)) {
-      throw new Error("صيغة الصورة غير مدعومة.");
-    }
-
-    const bytes = Utilities.base64Decode(data.imageBase64);
-
-    if (bytes.length > 8 * 1024 * 1024) {
-      throw new Error("حجم الصورة يتجاوز 8 ميغابايت.");
-    }
-
-    const fileName = String(data.fileName || "واجب")
-      .replace(/[\\/:*?"<>|]/g, "_")
-      .substring(0, 150);
-
-    const blob = Utilities.newBlob(
-      bytes,
-      data.mimeType,
-      fileName
+    const folder = DriveApp.getFolderById(
+      props.getProperty('FOLDER_ID')
+    );
+    const ss = SpreadsheetApp.openById(
+      props.getProperty('SPREADSHEET_ID')
     );
 
-    const folder = DriveApp.getFolderById(folderId);
+    const blob = Utilities.newBlob(
+      Utilities.base64Decode(base64),
+      mime,
+      filename
+    );
+
     const file = folder.createFile(blob);
+    file.setDescription(
+      'واجب الطالب: ' + name + ' - ' + grade + ' - ' + section
+    );
 
-    const spreadsheet = SpreadsheetApp.openById(sheetId);
-    const sheet = spreadsheet.getSheetByName("التسليمات");
-
-    sheet.appendRow([
-      new Date(),
-      String(data.studentName).substring(0, 100),
-      String(data.grade).substring(0, 50),
-      String(data.section).substring(0, 40),
-      String(data.homeworkTitle || "").substring(0, 120),
-      file.getUrl()
+    ss.getSheetByName('التسليمات').appendRow([
+      new Date(), name, grade, section, title, file.getUrl(), filename
     ]);
 
-    return jsonResponse({
-      success: true,
-      message: "تم حفظ الواجب بنجاح."
-    });
+    return ContentService.createTextOutput(
+      JSON.stringify({ok: true})
+    ).setMimeType(ContentService.MimeType.JSON);
 
   } catch (error) {
-    return jsonResponse({
-      success: false,
-      message: error.message
-    });
+    return ContentService.createTextOutput(
+      JSON.stringify({ok: false, error: String(error)})
+    ).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
 function doGet() {
-  return jsonResponse({
-    success: true,
-    message: "خدمة استقبال الواجبات تعمل."
-  });
-}
-
-function jsonResponse(data) {
-  return ContentService
-    .createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(
+    'بوابة تسليم الواجبات تعمل.'
+  );
 }
